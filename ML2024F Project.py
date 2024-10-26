@@ -1,9 +1,7 @@
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import RandomForestClassifier
 import xgboost as xgb
 from sklearn.metrics import roc_auc_score
 
@@ -61,50 +59,49 @@ X_train_scaled = scaler.fit_transform(X_train)
 X_val_scaled = scaler.transform(X_val)
 test_data_scaled = scaler.transform(test_data_encoded)
 
-# -------------------------- Train Logistic Regression --------------------------
-logreg_best = LogisticRegression(C=0.1, penalty='l1', solver='liblinear', random_state=42, max_iter=1000)
-logreg_best.fit(X_train_scaled, y_train)
-y_val_pred_proba_logreg = logreg_best.predict_proba(X_val_scaled)[:, 1]
-test_predictions_proba_logreg = logreg_best.predict_proba(test_data_scaled)[:, 1]
+# -------------------------- XGBoost Hyperparameter Tuning with Grid Search --------------------------
 
-# -------------------------- Train Random Forest --------------------------
-rf_best_model = RandomForestClassifier(n_estimators=500, max_depth=20, min_samples_split=5, random_state=42)
-rf_best_model.fit(X_train_scaled, y_train)
-y_val_pred_proba_rf = rf_best_model.predict_proba(X_val_scaled)[:, 1]
-test_predictions_proba_rf = rf_best_model.predict_proba(test_data_scaled)[:, 1]
+# Define parameter grid for XGBoost
+param_grid_xgb = {
+    'learning_rate': [0.01, 0.05, 0.1],
+    'max_depth': [4, 6, 8],
+    'subsample': [0.6, 0.8, 1.0],
+    'colsample_bytree': [0.6, 0.8, 1.0]
+}
 
-# -------------------------- Train XGBoost --------------------------
+# Initialize the XGBoost model
 xgb_model = xgb.XGBClassifier(eval_metric='auc', random_state=42)
-xgb_model.fit(X_train_scaled, y_train)
-y_val_pred_proba_xgb = xgb_model.predict_proba(X_val_scaled)[:, 1]
-test_predictions_proba_xgb = xgb_model.predict_proba(test_data_scaled)[:, 1]
 
-# -------------------------- Weighted Blending --------------------------
+# Perform grid search with 5-fold cross-validation
+grid_search_xgb = GridSearchCV(estimator=xgb_model, param_grid=param_grid_xgb, cv=5, scoring='roc_auc', n_jobs=-1)
+grid_search_xgb.fit(X_train_scaled, y_train)
 
-# Assign weights based on model performance
-weight_logreg = 0  # Logistic Regression has performed well
-weight_rf = 0      # Random Forest has a moderate weight
-weight_xgb = 1     # XGBoost has a moderate weight
+# Get the best parameters and the best AUC score
+best_params_xgb = grid_search_xgb.best_params_
+best_auc_xgb = grid_search_xgb.best_score_
 
-# Weighted blending for validation set predictions
-y_val_weighted_blended = (weight_logreg * y_val_pred_proba_logreg +
-                          weight_rf * y_val_pred_proba_rf +
-                          weight_xgb * y_val_pred_proba_xgb)
+print(f"Best XGBoost Parameters: {best_params_xgb}")
+print(f"Best XGBoost AUC from Grid Search: {best_auc_xgb}")
 
-# Weighted blending for test set predictions
-test_predictions_weighted_blended = (weight_logreg * test_predictions_proba_logreg +
-                                     weight_rf * test_predictions_proba_rf +
-                                     weight_xgb * test_predictions_proba_xgb)
+# Refit XGBoost with the best parameters
+xgb_best_model = xgb.XGBClassifier(**best_params_xgb, eval_metric='auc', random_state=42)
+xgb_best_model.fit(X_train_scaled, y_train)
 
-# Evaluate the weighted blended model on the validation set
-auc_weighted_blended = roc_auc_score(y_val, y_val_weighted_blended)
-print(f"Weighted Blended AUC on Validation Set: {auc_weighted_blended}")
+# Predict probabilities for the validation set
+y_val_pred_proba_xgb_best = xgb_best_model.predict_proba(X_val_scaled)[:, 1]
 
-# Prepare the submission file for weighted blended predictions
-submission_weighted_blended = pd.DataFrame({
+# Evaluate the tuned XGBoost model on the validation set
+auc_xgb_best = roc_auc_score(y_val, y_val_pred_proba_xgb_best)
+print(f"Tuned XGBoost AUC on Validation Set: {auc_xgb_best}")
+
+# Predict for the test set
+test_predictions_proba_xgb_best = xgb_best_model.predict_proba(test_data_scaled)[:, 1]
+
+# Prepare the submission file
+submission_xgb_best = pd.DataFrame({
     'ID': test_data['ID'],  # Assuming the test set has an 'ID' column
-    'Prediction': test_predictions_weighted_blended
+    'Prediction': test_predictions_proba_xgb_best
 })
 
-# Save the weighted blended submission file
-submission_weighted_blended.to_csv('submission.csv', index=False)
+# Save the tuned XGBoost submission file
+submission_xgb_best.to_csv('submission.csv', index=False)
